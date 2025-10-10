@@ -16,8 +16,7 @@ class TrainingConfig:
 
     lr: float = 0.001
     muon_lr: float = 0.001
-    hidden_size1: int = 256
-    hidden_size2: int = 128
+    hidden_dim: int = 256
     beta1: float = 0.95
     beta2: float = 0.95
     momentum: float = 0.9
@@ -25,7 +24,7 @@ class TrainingConfig:
     num_epochs: int = 10
     muon_enabled: bool = True
     ns_steps: int = 5
-    seperate_biases: bool = False
+    seperate_biases: bool = True
     use_wu_cosine: bool = False
 
 def plot_losses(train_losses, val_losses, batches_per_epoch, title):
@@ -48,7 +47,9 @@ def train(cfg: TrainingConfig):
     print("making loaders")
     train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=cfg.batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLP(input_size=28*28, hidden_sizes=[cfg.hidden_size1, cfg.hidden_size2], output_size=10).to(device)
+    model = MLP(input_dim=28*28, hidden_dim=cfg.hidden_dim, output_dim=10).to(device)
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.shape}")
     criterion = nn.CrossEntropyLoss()
 
 
@@ -58,7 +59,10 @@ def train(cfg: TrainingConfig):
         muon_params = [p for n, p in model.named_parameters() if 'bias' not in n] if cfg.seperate_biases else model.parameters()
         adamw_params = [p for n, p in model.named_parameters() if 'bias' in n] if cfg.seperate_biases else []
         muon_optimizer = Muon(muon_params, lr=cfg.muon_lr, momentum=cfg.momentum, weight_decay=cfg.weight_decay)
-        adamw_optimizer = optim.AdamW(adamw_params, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+        if adamw_params != []:
+            adamw_optimizer = optim.AdamW(adamw_params, lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+        else:
+            adamw_optimizer = None
 
     else:
         adamw_optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
@@ -74,7 +78,7 @@ def train(cfg: TrainingConfig):
         epoch_loss = 0
         for batch_idx, (data, target) in enumerate(train_loader):
             x,y = data.to(device), target.to(device)
-            if adamw_params != []:
+            if adamw_optimizer is not None:
                 adamw_optimizer.zero_grad()
             if cfg.muon_enabled:
                 muon_optimizer.zero_grad()
@@ -82,33 +86,36 @@ def train(cfg: TrainingConfig):
             loss = criterion(output, y)
             epoch_loss += loss.item()
             loss.backward()
-            if adamw_params != []:
+            if adamw_optimizer is not None:
                 adamw_optimizer.step()
             if cfg.muon_enabled:
-                muon_optimizer.step(ns_steps=cfg.ns_steps, use_wu_cosine=cfg.use_wu_cosine)
+                muon_optimizer.step()
 
             train_losses.append(loss.item())
 
+        val_epoch_loss = 0
         for batch_idx, (data, target) in enumerate(val_loader):
             model.eval()
             x,y = data.to(device), target.to(device)
             output = model(x)
             loss = criterion(output, y)
-            val_losses.append(loss.item())
+            val_epoch_loss += loss.item()
+        val_losses.append(val_epoch_loss / len(val_loader))
 
         print(f"Epoch {epoch+1}/{cfg.num_epochs}, Train Loss: {epoch_loss/len(train_loader):.4f}, Val Loss: {val_losses[-1]:.4f}")
 
     batches_per_epoch = len(train_loader)
     title = f"MNIST_MLP"
-    if cfg.muon_enabled:
-        title += f"_muon_lr={cfg.muon_lr}_ns={cfg.ns_steps}_mom={cfg.momentum}_wd={cfg.weight_decay}"
+    title += f"_muon" if cfg.muon_enabled else "_adamw"
+    title += f"_hd={cfg.hidden_dim}"
+    title += f"_lr={cfg.muon_lr}_ns={cfg.ns_steps}_mom={cfg.momentum}_wd={cfg.weight_decay}"
     if cfg.seperate_biases:
         title += f"_seperate_biases"
     if cfg.use_wu_cosine:
         title += f"_wu_cosine"
 
     plot_losses(train_losses, val_losses, batches_per_epoch, title)
-    # Test
+    #test set
     model.eval()
     test_loss = 0
     correct = 0
@@ -125,22 +132,5 @@ def train(cfg: TrainingConfig):
     return test_loss, test_accuracy
 
 if __name__ == "__main__":
-    cfg = TrainingConfig()
+    cfg = TrainingConfig(muon_enabled=False)
     train(cfg)
-
-
-    
-
-    
-
-
-        
-
-
-
-
-
-
-
-
-

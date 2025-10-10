@@ -12,15 +12,15 @@ def get_mnist_dataloaders(batch_size=64, val_ratio=0.1) -> tuple[DataLoader, Dat
     Returns:
         tuple: (train_loader, val_loader, test_loader)
     """
-    data_path = "/fast/slaing/data/vision/mnist/MNIST/"
+    data_path = "/fast/slaing/data/vision/mnist/"
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,)),
         transforms.Lambda(lambda x: x.view(-1)) 
     ])
 
-    train_dataset = datasets.MNIST(data_path, train=True, transform=transform)
-    test_dataset = datasets.MNIST(data_path, train=False, transform=transform)
+    train_dataset = datasets.MNIST(data_path, train=True, transform=transform, download=False)
+    test_dataset = datasets.MNIST(data_path, train=False, transform=transform, download=False)
 
     val_size = int(len(train_dataset) * val_ratio)
     train_size = len(train_dataset) - val_size

@@ -59,7 +59,7 @@ def orthogonalise(G):
 class Muon(torch.optim.Optimizer):
     def __init__(
             self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7,
-            orthogonalize=False
+            orthogonalize=False, weight_decay=0.0
             ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -71,6 +71,7 @@ class Muon(torch.optim.Optimizer):
         self.steps = steps
         self.orthogonalize = orthogonalize
         self.eps = eps
+        self.weight_decay = weight_decay
         super().__init__(params, defaults)
 
     def step(self):
@@ -96,6 +97,10 @@ class Muon(torch.optim.Optimizer):
                 else:
                     update = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).view(g.shape)
                 update.mul_(max(1, g.size(-2) / g.size(-1))**0.5)
+                #decoupled weight decay like adamw
+                if self.weight_decay > 0:
+                    p.data.add_(p.data, alpha=-self.weight_decay * lr)
+                    
                 p.data.add_(update, alpha=-lr) # take a step
 
 

@@ -1,1 +1,4 @@
 plots/
+#all pycache files
+__pycache__/
+
