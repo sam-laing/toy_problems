@@ -63,12 +63,17 @@ if __name__ == "__main__":
     model_without_bias = MLP(input_dim=10, hidden_dim=20, output_dim=5, activation='relu', seperate_bias=True)
 
     for name, param in model_with_bias.named_parameters():
+        print(name, param.shape)
         print(f"With bias - {name}: {param.shape}")
 
     for name, param in model_without_bias.named_parameters():
+        print(name, param.shape)
         print(f"Without bias - {name}: {param.shape}")
+
 
     num_params_with_bias = sum(p.numel() for p in model_with_bias.parameters())
     num_params_without_bias = sum(p.numel() for p in model_without_bias.parameters())
     print(f"Total parameters with bias: {num_params_with_bias}")
     print(f"Total parameters without bias: {num_params_without_bias}")
+
+

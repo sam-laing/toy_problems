@@ -8,6 +8,7 @@ import torch.optim as optim
 
 from optim.muon import Muon
 import matplotlib.pyplot as plt
+from utils import get_lipschitz_constant, top_sv
 
 @dataclass
 class TrainingConfig:
@@ -27,7 +28,8 @@ class TrainingConfig:
     seperate_biases: bool = True
     use_wu_cosine: bool = False
 
-def plot_losses(train_losses, val_losses, batches_per_epoch, title):
+def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_consts=None, algebraic_consts=None):
+    
     # the val losses are only every epoch and train losses are every batch
     # make val plot with skips
     plt.figure(figsize=(10, 5))
@@ -43,6 +45,7 @@ def plot_losses(train_losses, val_losses, batches_per_epoch, title):
 
 
 
+
 def train(cfg: TrainingConfig):
     print("making loaders")
     train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=cfg.batch_size)
@@ -50,33 +53,6 @@ def train(cfg: TrainingConfig):
     model = MLP(input_dim=28*28, hidden_dim=cfg.hidden_dim, output_dim=10, seperate_bias=cfg.seperate_biases).to(device)
     for name, param in model.named_parameters():
         print(f"{name}: {param.shape}")
-
-    with torch.no_grad():
-        # Get a sample batch
-        x, _ = next(iter(train_loader))
-        x = x.to(device)
-        
-        # Forward pass
-        if not model.seperate_biases:
-            batch_size = x.shape[0]
-            ones = torch.ones(batch_size, 1, device=device)
-            x_aug = torch.cat([x, ones], dim=1)
-            h = model.activation(x_aug @ model.fc1)
-            h_aug = torch.cat([h, ones], dim=1)
-            logits = h_aug @ model.fc2
-        else:
-            logits = model(x)
-            
-        # Check logit statistics
-        print(f"Logit mean: {logits.mean().item():.4f}")
-        print(f"Logit std: {logits.std().item():.4f}")
-        print(f"Logit min: {logits.min().item():.4f}")
-        print(f"Logit max: {logits.max().item():.4f}")
-        
-        # Check softmax statistics
-        probs = torch.softmax(logits, dim=1)
-        print(f"Max probability: {probs.max().item():.4f}")
-        print(f"Min probability: {probs.min().item():.4f}")
 
 
     criterion = nn.CrossEntropyLoss()
@@ -216,6 +192,114 @@ if __name__ == "__main__":
 
 
     """
-    cfg = TrainingConfig(
-        muon_enabled=True, orthogonalize=True, seperate_biases=True, num_epochs=10, lr=0.001, use_wu_cosine=False)
-    train(cfg)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = MLP(input_dim=28*28, hidden_dim=2048, output_dim=10, seperate_bias=True).to(device)
+
+    train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=512)
+
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.95, 0.95), weight_decay=1e-4)
+
+    criterion = nn.CrossEntropyLoss()
+
+    #basically do a few training steps, compute the actual lipschitz constant and approximate lipschitz with the batch
+    # literally by max ||f(x1) - f(x2)|| / ||x1-x2|| over the batch (each pair of points or representative if too large)
+
+    def get_empirical_lipschitz(model, x, eps=1e-6, max_pairs=None):
+        """
+        Calculate empirical Lipschitz constant using vectorized operations.
+        
+        Args:
+            model: Model to evaluate
+            x: Input tensor [batch_size, *feature_dims]
+            eps: Small constant to prevent division by zero
+            max_pairs: If set, randomly sample this many pairs (for very large batches)
+        
+        Returns:
+            Empirical Lipschitz constant (float)
+        """
+        model.eval()
+        with torch.no_grad():
+            outputs = model(x)
+        
+        batch_size = x.size(0)
+        
+        # For large batches, sample random pairs instead of computing all n^2 pairs
+        if max_pairs and max_pairs < (batch_size * (batch_size - 1)) // 2:
+            idx1 = torch.randint(0, batch_size, (max_pairs,), device=x.device)
+            idx2 = torch.randint(0, batch_size, (max_pairs,), device=x.device)
+            # Ensure idx1 != idx2
+            same_indices = (idx1 == idx2)
+            idx2[same_indices] = (idx2[same_indices] + 1) % batch_size
+            
+            # Compute differences
+            x_diffs = x[idx1] - x[idx2]
+            out_diffs = outputs[idx1] - outputs[idx2]
+        else:
+            # Vectorized computation of all unique pairwise differences
+            idx1, idx2 = torch.triu_indices(batch_size, batch_size, 1, device=x.device)
+            
+            x_diffs = x[idx1] - x[idx2]
+            out_diffs = outputs[idx1] - outputs[idx2]
+        
+        # Flatten each difference vector and compute norms
+        x_norms = torch.norm(x_diffs.view(x_diffs.size(0), -1), dim=1) + eps
+        out_norms = torch.norm(out_diffs.view(out_diffs.size(0), -1), dim=1)
+        
+        # Compute all ratios and find max
+        ratios = out_norms / x_norms
+        return ratios.max().item()
+
+    empirical_consts = []
+    algebraic_consts = []
+
+    model.train()
+    for epoch in range(15):
+
+    
+        for x,y in train_loader:
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad()
+            output = model(x)
+            loss = criterion(output, y)
+            loss.backward()
+            optimizer.step()
+
+            with torch.no_grad():
+                L_algebraic = get_lipschitz_constant(model)
+                algebraic_consts.append(L_algebraic)
+                L_empirical = get_empirical_lipschitz(model, x, max_pairs=10000)
+                empirical_consts.append(L_empirical)
+    # plot the two constants over time
+    import matplotlib.pyplot as plt
+    plt.plot(empirical_consts, label='Empirical Lipschitz Constant')
+    plt.plot(algebraic_consts, label='Algebraic Lipschitz Constant (Top SV)')
+    plt.xlabel('Training Steps')
+    plt.ylabel('Lipschitz Constant')
+    plt.legend()
+    plt.title('Lipschitz Constant During Training')
+    plt.savefig('/home/slaing/muon_research/toy_problems/plots/lipschitz_constants.png')
+
+    #test set
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            x,y = data.to(device), target.to(device)
+            output = model(x)
+            test_loss += criterion(output, y).item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(y.view_as(pred)).sum().item()
+    test_loss /= len(test_loader.dataset)
+    test_accuracy = 100. * correct / len(test_loader.dataset)
+    print(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%')
+    
+ 
+
+
+
+
+        
+
+
