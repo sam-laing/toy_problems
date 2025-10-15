@@ -2,9 +2,10 @@ import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split, Subset
 
-def get_mnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42, download=False) -> tuple[DataLoader, DataLoader, DataLoader]:
+#duplicate above but for fashion mnist
+def get_fmnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42, download=True) -> tuple[DataLoader, DataLoader, DataLoader]:
     """   
-    Gets a train, validation, and test DataLoader for the MNIST dataset.
+    Gets a train, validation, and test DataLoader for the FashionMNIST dataset.
     Args:
         batch_size (int): Number of samples per batch.
         val_ratio (float): Proportion of training data to use for validation.
@@ -16,15 +17,15 @@ def get_mnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42, download=False)
     if seed is not None:
         torch.manual_seed(seed)
         
-    data_path = "/fast/slaing/data/vision/mnist/"
+    data_path = "/fast/slaing/data/vision/fashion_mnist/"
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,)),
+        transforms.Normalize((0.2860,), (0.3530,)),
         transforms.Lambda(lambda x: x.view(-1)) 
     ])
 
-    train_dataset = datasets.MNIST(data_path, train=True, transform=transform, download=download)
-    test_dataset = datasets.MNIST(data_path, train=False, transform=transform, download=download)
+    train_dataset = datasets.FashionMNIST(data_path, train=True, transform=transform, download=download)
+    test_dataset = datasets.FashionMNIST(data_path, train=False, transform=transform, download=download)
 
     #stratified split: same number of each class in train and val
     if val_ratio > 0:
@@ -57,26 +58,18 @@ def get_mnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42, download=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, val_loader, test_loader
 
-
 if __name__ == "__main__":
-    train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42)
+    train_loader, val_loader, test_loader = get_fmnist_dataloaders(batch_size=64, val_ratio=0.1, seed=42)
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
-    
-
+    #print a batch
+    data_iter = iter(train_loader)
+    images, labels = next(data_iter)
+    print(f"Batch shape: {images.shape}, Labels shape: {labels.shape}")
+    print(f"First 10 labels: {labels[:10]}")
+    print(f"First image tensor: {images[0]}")
+    #check if stratified split worked
     if hasattr(train_loader.dataset, "dataset") and hasattr(train_loader.dataset.dataset, "targets"):
         train_indices = train_loader.dataset.indices
         val_indices = val_loader.dataset.indices
         all_targets = train_loader.dataset.dataset.targets
-        
-        train_targets = all_targets[train_indices]
-        val_targets = all_targets[val_indices]
-        
-        print("\nClass distribution:")
-        print("Class\tTrain\tVal\tRatio")
-        for i in range(10):  # MNIST has 10 classes
-            train_count = (train_targets == i).sum().item()
-            val_count = (val_targets == i).sum().item()
-            print(f"{i}\t{train_count}\t{val_count}\t{val_count/(train_count+val_count):.3f}")
-
-
 

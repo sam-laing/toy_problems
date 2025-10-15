@@ -1,5 +1,5 @@
 import torch
-
+import math
 # the muon optimizer with option to just orthogonalize rather than approximate
 @torch.compile
 def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
@@ -41,8 +41,6 @@ def get_svd(G, eps=1e-7):
         #throw error
         raise ValueError("G is a vector, cannot compute SVD")
     elif len(X.shape) == 2:
-        if X.size(0) > X.size(1):
-            X = X.T
         U, S, Vh = torch.linalg.svd(X, full_matrices=False)
         S = S.unsqueeze(0)
         return U, S, Vh
@@ -53,13 +51,16 @@ def get_svd(G, eps=1e-7):
 def orthogonalise(G):
     U, S, Vh = get_svd(G)
 
+    if G.size(0) > G.size(1):
+        return (U @ Vh).T
+
     return U @ Vh 
 
 
 class Muon(torch.optim.Optimizer):
     def __init__(
             self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7,
-            orthogonalize=False, weight_decay=0.0
+            orthogonalize=False, weight_decay=0.0, adjust_lr=True
             ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -72,6 +73,7 @@ class Muon(torch.optim.Optimizer):
         self.orthogonalize = orthogonalize
         self.eps = eps
         self.weight_decay = weight_decay
+        self.adjust_lr = adjust_lr
         super().__init__(params, defaults)
 
     def step(self):
@@ -97,11 +99,17 @@ class Muon(torch.optim.Optimizer):
                 else:
                     update = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).view(g.shape)
                 update.mul_(max(1, g.size(-2) / g.size(-1))**0.5)
-                #decoupled weight decay like adamw
+
+                effective_lr = lr
+                if self.adjust_lr:
+                    #as in moonshot: scale learning rate: 0.2 · sqrt(max(A, B)) 
+                    effective_lr = 0.2*math.sqrt(max(g.size(-2), g.size(-1)))*lr
+                
                 if self.weight_decay > 0:
                     p.data.add_(p.data, alpha=-self.weight_decay * lr)
-                    
-                p.data.add_(update, alpha=-lr) # take a step
+
+                p.data.add_(update, alpha=-effective_lr) 
+        return None
 
 
 from torch.optim.lr_scheduler import _LRScheduler

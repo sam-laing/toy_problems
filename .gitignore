@@ -1,4 +1,31 @@
-plots/
-#all pycache files
-__pycache__/
+# Python cache files - will catch all __pycache__ dirs and .pyc files anywhere in the repo
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
 
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# Project specific
+plots/
+checkpoints/
+*.log
+*.pkl
+*.cpython-*-
+*.pyc
+results/
