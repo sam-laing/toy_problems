@@ -195,6 +195,12 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MLP(input_dim=28*28, hidden_dim=2048, output_dim=10, seperate_bias=True).to(device)
 
+
+
+    #list model parameters
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.shape}")
+
     train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=512)
 
     optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.95, 0.95), weight_decay=1e-4)

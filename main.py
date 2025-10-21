@@ -1,4 +1,5 @@
-from data.mnist import get_mnist_dataloaders
+from data import get_mnist_dataloaders, get_fmnist_dataloaders, get_cifar_dataloaders
+
 from models.mlp import MLP  
 from dataclasses import dataclass
 import torch
@@ -8,18 +9,19 @@ import torch.optim as optim
 
 from optim.muon import Muon
 import matplotlib.pyplot as plt
-from utils import get_lipschitz_constant, top_sv, get_empirical_lipschitz
+from utils import get_lipschitz_constant, top_sv, get_empirical_lipschitz, each_matrix_lipschitz, get_svd
 
 @dataclass
 class TrainingConfig:
+    dataset: str = "mnist"  
     batch_size: int = 512
     val_ratio: float = 0.1
     lr: float = 0.005
-    hidden_dim: int = 2048
+    hidden_dim: float = 2.5 # amount to scale input dim 
     beta1: float = 0.95
     beta2: float = 0.95
-    momentum: float = 0.9
-    weight_decay: float = 1e-4
+    momentum: float = 0.95
+    weight_decay: float = 0.0
     num_epochs: int = 10
     muon_enabled: bool = True
     ns_steps: int = 5
@@ -29,16 +31,16 @@ class TrainingConfig:
     use_wu_cosine: bool = False
 
     track_lipschitz: bool = False
+    make_plot: bool = True
+    log_every: int = 1  # log every n batches
 
-#create a panel for the empirical and algebraic lipschitz constants
-# but i want this and the losses to be side by side like two panels/subplots in one figure
 
 
-def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_consts=None, algebraic_consts=None):
+def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_consts=None, W1_top_svs=None, W2_top_svs=None, log_every=1):
     """
     Plot losses and optionally lipschitz constants side by side.
     """
-    if empirical_consts is not None and algebraic_consts is not None:
+    if empirical_consts is not None and W1_top_svs is not None and W2_top_svs is not None:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
         
         ax1.plot(train_losses, label='Train Loss', color='blue')
@@ -49,8 +51,10 @@ def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_co
         ax1.grid(True, alpha=0.4)
         ax1.legend()
         
-        ax2.plot(empirical_consts, label='Empirical Lipschitz', color='green')
-        ax2.plot(algebraic_consts, label='Algebraic Lipschitz (Top SV)', color='purple')
+        steps = range(0, len(empirical_consts) * log_every, log_every)
+        ax2.plot(steps, empirical_consts, label='Empirical Lipschitz Constant', color='green')
+        ax2.plot(steps, W1_top_svs, label='W1 Top Singular Value', color='red')
+        ax2.plot(steps, W2_top_svs, label='W2 Top Singular Value', color='purple')
         ax2.set_xlabel('Steps')
         ax2.set_ylabel('Lipschitz Constant')
         ax2.set_title('Lipschitz Constants')
@@ -68,7 +72,7 @@ def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_co
         plt.title(title)
         plt.legend()
     
-    plot_dir = "/home/slaing/muon_research/toy_problems/plots/"
+    plot_dir = "/home/slaing/muon_research/toy_problems/plots/matrix_consts/"
     plt.tight_layout()
     plt.savefig(f"{plot_dir}/{title}.pdf")
     plt.close()
@@ -78,9 +82,20 @@ def plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_co
 
 def train(cfg: TrainingConfig):
     print("making loaders")
-    train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=cfg.batch_size)
+
+    if cfg.dataset == "mnist":
+        train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=cfg.batch_size)
+    elif cfg.dataset == "fmnist":
+        train_loader, val_loader, test_loader = get_fmnist_dataloaders(batch_size=cfg.batch_size)
+    elif cfg.dataset == "cifar":
+        train_loader, val_loader, test_loader = get_cifar_dataloaders(batch_size=cfg.batch_size)
+    else:
+        raise ValueError(f"Unknown dataset: {cfg.dataset}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLP(input_dim=28*28, hidden_dim=cfg.hidden_dim, output_dim=10, seperate_bias=cfg.seperate_biases).to(device)
+    input_dim = 28*28 if cfg.dataset in ["mnist", "fmnist"] else 32*32*3
+    hidden_dim = int(input_dim * cfg.hidden_dim)
+    model = MLP(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=10, seperate_bias=cfg.seperate_biases).to(device)
     for name, param in model.named_parameters():
         print(f"{name}: {param.shape}")
 
@@ -109,8 +124,8 @@ def train(cfg: TrainingConfig):
     val_losses = []
 
     empirical_consts = [] if cfg.track_lipschitz else None
-    algebraic_consts = [] if cfg.track_lipschitz else None
-
+    W1_top_svs = [] if cfg.track_lipschitz else None
+    W2_top_svs = [] if cfg.track_lipschitz else None
 
     print("starting training")
     for epoch in range(cfg.num_epochs):
@@ -133,13 +148,18 @@ def train(cfg: TrainingConfig):
 
             train_losses.append(loss.item())
 
-            if cfg.track_lipschitz:
+            if cfg.track_lipschitz and batch_idx % cfg.log_every == 0:
                 model.eval()
                 with torch.no_grad():
-                    L_algebraic = get_lipschitz_constant(model)
-                    algebraic_consts.append(L_algebraic)
+                    svs_dict = each_matrix_lipschitz(model)
+
                     L_empirical = get_empirical_lipschitz(model, x, max_pairs=10000)
                     empirical_consts.append(L_empirical)
+
+                    W1_top_sv = svs_dict['fc1.weight']
+                    W1_top_svs.append(W1_top_sv)
+                    W2_top_sv = svs_dict['fc2.weight']
+                    W2_top_svs.append(W2_top_sv)
 
         val_epoch_loss = 0
         for batch_idx, (data, target) in enumerate(val_loader):
@@ -168,7 +188,7 @@ def train(cfg: TrainingConfig):
 
 
     batches_per_epoch = len(train_loader)
-    title = f"MNIST_MLP"
+    title = f"{cfg.dataset}_MLP"
     title += f"_muon" if cfg.muon_enabled else "_adamw"
     title += f"_hd={cfg.hidden_dim}"
     title += f"_lr={cfg.lr}_ns={cfg.ns_steps}_mom={cfg.momentum}_wd={cfg.weight_decay}_bs={cfg.batch_size}"
@@ -180,10 +200,10 @@ def train(cfg: TrainingConfig):
     #avoid overwriting plots
     import time
     title += f"_{int(time.time())}"
+    if cfg.make_plot:
+        plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_consts, W1_top_svs, W2_top_svs, log_every=cfg.log_every)
 
-    plot_losses(train_losses, val_losses, batches_per_epoch, title, empirical_consts, algebraic_consts)
-
-    return train_losses, val_losses, test_loss, test_accuracy, empirical_consts, algebraic_consts
+    return train_losses, val_losses, test_loss, test_accuracy, empirical_consts, W1_top_svs, W2_top_svs
     
 
 """   
@@ -203,104 +223,60 @@ plot_losses(train_losses, val_losses, batches_per_epoch, title)
 """
 
 if __name__ == "__main__":
-    """  
-    #num_seeds = 1
     results_dict = {}
-    #basically store results for each config in a json type file
-    #have keys as representative name based on config and values as list of (train_losses, val_losses, test_loss, test_accuracy) for each seed
     to_vary = {
-        "seperate_biases": [True],
+        "muon_enabled": [True, False],
         "lr": [0.0005, 0.001, 0.003, 0.01],
         "batch_size": [128, 256, 512, 1024],
         }
-    
-    for seperate_bias in to_vary["seperate_biases"]:
-        for lr in to_vary["lr"]:
+
+    for lr in to_vary["lr"]:
             for batch_size in to_vary["batch_size"]:
-                cfg = TrainingConfig(muon_enabled=True, seperate_biases=seperate_bias, num_epochs=10, lr=lr, batch_size=batch_size)
-                print(f"Training with config: {cfg}")
-                train_losses, val_losses, test_loss, test_accuracy = train(cfg)
-                key = f"muon_sep={seperate_bias}_lr={lr}_bs={batch_size}"
-                results_dict[key] = (train_losses, val_losses, test_loss, test_accuracy)
+                for muon_enabled in to_vary["muon_enabled"]:
+                    cfg = TrainingConfig(
+                        dataset="fmnist", track_lipschitz=True, log_every=5,
+                        muon_enabled=muon_enabled, num_epochs=10, lr=lr, 
+                        batch_size=batch_size, weight_decay=0.0)
+                    
+                    train_losses, val_losses, test_loss, test_accuracy, empirical_consts, W1_top_svs, W2_top_svs = train(cfg)
+                    if muon_enabled:
+                        key = f"muon_lr_{lr}_bs_{batch_size}"
+                    else:
+                        key = f"adam_lr_{lr}_bs_{batch_size}"
+                    
+                    results_dict[key] = {
+                        "train_losses": train_losses,
+                        "val_losses": val_losses,
+                        "test_loss": test_loss,
+                        "test_accuracy": test_accuracy,
+                        "empirical_consts": empirical_consts,
+                        "W1_top_svs": W1_top_svs,
+                        "W2_top_svs": W2_top_svs
+                    }
+                    
     import json
     import os
     results_dir = "/home/slaing/muon_research/toy_problems/results/"
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
     import time
-    filename = f"{results_dir}/mnist_mlp_batch_lr_{int(time.time())}.json"
+    filename = f"{results_dir}/fmnist_mlp_batch_lr_{int(time.time())}.json"
     with open(filename, 'w') as f:
         json.dump(results_dict, f)
-
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLP(input_dim=28*28, hidden_dim=2048, output_dim=10, seperate_bias=True).to(device)
-
-    train_loader, val_loader, test_loader = get_mnist_dataloaders(batch_size=512)
-
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.95, 0.95), weight_decay=1e-4)
-
-    criterion = nn.CrossEntropyLoss()
-
-    #basically do a few training steps, compute the actual lipschitz constant and approximate lipschitz with the batch
-    # literally by max ||f(x1) - f(x2)|| / ||x1-x2|| over the batch (each pair of points or representative if too large)
-
-    empirical_consts = []
-    algebraic_consts = []
-
-    model.train()
-    for epoch in range(15):
-
-    
-        for x,y in train_loader:
-            x = x.to(device)
-            y = y.to(device)
-            optimizer.zero_grad()
-            output = model(x)
-            loss = criterion(output, y)
-            loss.backward()
-            optimizer.step()
-
-            with torch.no_grad():
-                L_algebraic = get_lipschitz_constant(model)
-                algebraic_consts.append(L_algebraic)
-                L_empirical = get_empirical_lipschitz(model, x, max_pairs=10000)
-                empirical_consts.append(L_empirical)
-    # plot the two constants over time
-    import matplotlib.pyplot as plt
-    plt.plot(empirical_consts, label='Empirical Lipschitz Constant')
-    plt.plot(algebraic_consts, label='Algebraic Lipschitz Constant (Top SV)')
-    plt.xlabel('Training Steps')
-    plt.ylabel('Lipschitz Constant')
-    plt.legend()
-    plt.title('Lipschitz Constant During Training')
-    plt.savefig('/home/slaing/muon_research/toy_problems/plots/lipschitz_constants.png')
-
-    #test set
-    model.eval()
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            x,y = data.to(device), target.to(device)
-            output = model(x)
-            test_loss += criterion(output, y).item()
-            pred = output.argmax(dim=1, keepdim=True)
-            correct += pred.eq(y.view_as(pred)).sum().item()
-    test_loss /= len(test_loader.dataset)
-    test_accuracy = 100. * correct / len(test_loader.dataset)
-    print(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%')
-    
     """
-    cfg = TrainingConfig(muon_enabled=True, seperate_biases=True, num_epochs=10, lr=0.001, batch_size=32, track_lipschitz=True)
-    train_losses, val_losses, test_loss, test_accuracy, empirical_consts, algebraic_consts = train(cfg)
-    
-    cfg = TrainingConfig(muon_enabled=False, seperate_biases=True, num_epochs=10, lr=0.001, batch_size=32, track_lipschitz=True)
-    train_losses, val_losses, test_loss, test_accuracy, empirical_consts, algebraic_consts = train(cfg)
-    
+    cfg = TrainingConfig(
+        dataset="fmnist", num_epochs=10,  muon_enabled=True, seperate_biases=True,  
+        lr=0.001, batch_size=256, track_lipschitz=True, log_every=10)
+    train_losses, val_losses, test_loss, test_accuracy, empirical_consts, W1_top_svs, W2_top_svs = train(cfg)
+
+    cfg = TrainingConfig(
+        dataset="fmnist", num_epochs=10, muon_enabled=False, seperate_biases=True, 
+        lr=0.001, batch_size=256, track_lipschitz=True, log_every=10)
+    train_losses, val_losses, test_loss, test_accuracy, empirical_consts, W1_top_svs, W2_top_svs = train(cfg)
+    """  
 
 
-
+    #looking to do a sweep over learning rates, batch sizes 
 
         
 
